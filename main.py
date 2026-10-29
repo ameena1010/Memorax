@@ -32,6 +32,8 @@ def main():
     reminder_service.start()
     print("[SYSTEM] Background Reminder Engine Started.")
 
+    last_interaction_time = 0
+
     # Forward declare app so our functions can push text to the UI
     app = None
 
@@ -64,7 +66,9 @@ def main():
             if app: app.append_chat("System", "Document ingested and ready for RAG search.")
         threading.Thread(target=process_upload, daemon=True).start()
 
-    def handle_glasses_command(command: str):
+    def handle_glasses_command(command: str, client_socket=None):
+        nonlocal last_interaction_time
+        
         if command == "BUTTON_PRESS":
             # NEW: Interruption Logic
             if audio.is_speaking:
@@ -127,22 +131,41 @@ def main():
             if user_speech:
                 print(f"[HARDWARE MIC] Transcribed: '{user_speech}'")
                 
-                # 2. Check if the Edge stream actually contained the wake word!
-                if "jarvis" in user_speech.lower():
+                # 2. Check if we are in an active conversation (last 30 seconds)
+                current_time = time.time()
+                in_conversation = (current_time - last_interaction_time) < 30
+                
+                # 3. Process if wake word is heard OR if we are in active conversation
+                if "jarvis" in user_speech.lower() or in_conversation:
                     if app: app.append_chat("You (Glasses)", user_speech)
                     audio.speak("Thinking...")
                     
-                    # 3. Pass the transcribed text to the ReAct Orchestrator
+                    # 4. Pass the transcribed text to the ReAct Orchestrator
                     ai_response = assistant.ask_question(user_speech)
                     
                     print(f"\n>>> AI RESPONSE: {ai_response} <<<\n")
                     if app: app.append_chat("AI", ai_response)
                     audio.speak(ai_response)
+                    
+                    # Update conversation timer since a successful interaction occurred
+                    last_interaction_time = time.time()
                 else:
                     # Ignore background chatter, doors slamming, or people talking to someone else
-                    print("[SYSTEM] Wake word 'Jarvis' not detected. Ignoring background noise.")
+                    print("[SYSTEM] Wake word 'Jarvis' not detected, and not in active conversation. Ignoring.")
             else:
                 print("[SYSTEM] Audio contained only noise. Ignored.")
+                
+            if client_socket:
+                print("[SYSTEM] Waiting for TTS playback to finish before unlocking glasses...")
+                # Freeze this socket thread until the audio queue is completely empty
+                while audio.is_speaking or not audio.tts_queue.empty():
+                    time.sleep(0.1)
+                try:
+                    # Signal the ESP32 that it's safe to listen again!
+                    client_socket.sendall(b"DONE\n")
+                    print("[SYSTEM] Sent 'DONE' signal to glasses. They are listening again.")
+                except Exception as e:
+                    print(f"[SYSTEM] Could not send DONE signal: {e}")
 
         elif command == "START_MEETING":
             print("[SYSTEM] Glasses requested meeting start.")

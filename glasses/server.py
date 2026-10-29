@@ -21,6 +21,7 @@ class GlassesServer:
 
     def _handle_client(self, client_socket, addr):
         print(f"[NETWORK] Connection received from {addr}")
+        client_socket.settimeout(15.0)
         try:
             # 1. Read the header character by character until newline
             header_data = b""
@@ -30,7 +31,7 @@ class GlassesServer:
                     break
                 header_data += chunk
             
-            header_str = header_data.decode('utf-8').strip()
+            header_str = header_data.decode('utf-8', errors='ignore').strip()
             print(f"[NETWORK] Received header: {header_str}")
             
             # 2. Parse the command and payload length
@@ -43,31 +44,27 @@ class GlassesServer:
 
             # 3. Route the commands
             if command == "IMAGE":
-                # Read the binary image payload
                 payload = bytearray()
                 bytes_received = 0
                 
                 print(f"[NETWORK] Incoming Image: Expecting {payload_length} bytes...")
                 
                 while bytes_received < payload_length:
-                    # Request chunks
                     chunk = client_socket.recv(min(4096, payload_length - bytes_received))
                     if not chunk:
                         print(f"[NETWORK] Warning: Connection closed early. Got {bytes_received}/{payload_length} bytes.")
-                        break # Break out, but KEEP the payload we have!
+                        break
                         
                     payload.extend(chunk)
                     bytes_received += len(chunk)
                 
                 print(f"[NETWORK] Image download complete: {bytes_received} bytes received.")
                     
-                # Save the image (Even if it's slightly truncated, it often still opens!)
                 if bytes_received > 0:
                     with open("latest_capture.jpg", "wb") as f:
                         f.write(payload)
                     print("[NETWORK] Image saved to disk.")
-                    # Trigger the callback in main.py
-                    self.on_command_callback("IMAGE_RECEIVED")
+                    self.on_command_callback("IMAGE_RECEIVED", client_socket)
                 else:
                     print("[NETWORK] Error: Received 0 bytes for image.")
 
@@ -77,7 +74,7 @@ class GlassesServer:
                 
                 try:
                     while True:
-                        # 1. Read the chunk header (e.g., "CHUNK:2048\n" or "END\n")
+                        # 1. Read the chunk header (e.g., "CHUNK:1024\n" or "END\n")
                         header_data = b""
                         while b"\n" not in header_data:
                             char = client_socket.recv(1)
@@ -89,7 +86,7 @@ class GlassesServer:
                             print("[NETWORK] Connection dropped during stream.")
                             break
                             
-                        header_str = header_data.decode('utf-8').strip()
+                        header_str = header_data.decode('utf-8', errors='ignore').strip()
                         
                         # 2. Check if the glasses are done sending
                         if header_str == "END":
@@ -109,12 +106,12 @@ class GlassesServer:
                                 bytes_received += len(chunk)
                                 
                 except Exception as stream_err:
-                     print(f"[NETWORK] Warning: Audio stream interrupted: {stream_err}")
+                    print(f"[NETWORK] Warning: Audio stream interrupted: {stream_err}")
                     
                 print(f"[NETWORK] Audio stream ended. Total received: {len(payload)} bytes.")
                 
-                # Process if we received enough data (> 0.5 seconds)
-                if len(payload) > 16000:
+                # Process if we received enough data (> ~0.37 seconds)
+                if len(payload) >= 12000:
                     wav_filename = "glasses_voice_query.wav"
                     try:
                         with wave.open(wav_filename, 'wb') as wf:
@@ -123,15 +120,14 @@ class GlassesServer:
                             wf.setframerate(16000)      # 16 kHz
                             wf.writeframes(payload)
                         print(f"[NETWORK] Saved {wav_filename} successfully.")
-                        self.on_command_callback("VOICE_AUDIO_RECEIVED")
+                        self.on_command_callback("VOICE_AUDIO_RECEIVED", client_socket)
                     except Exception as wave_err:
                         print(f"[NETWORK] Failed to save WAV file: {wave_err}")
                 else:
                     print(f"[NETWORK] Ignored short/blank audio clip ({len(payload)} bytes). Please hold the button longer.")
 
             else:
-                # Forward all other commands (BUTTON_PRESS, START_MEETING, STOP_MEETING)
-                self.on_command_callback(command)
+                self.on_command_callback(command, client_socket)
                 
         except Exception as e:
             print(f"[NETWORK] Error handling client {addr}: {e}")
